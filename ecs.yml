@@ -1,0 +1,231 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  App:
+    Type: String
+    Default: "djangoscaling"
+  ContainerName:
+    Type: String
+    Default: "django-scaling-app"
+  ContainerPort:
+    Type: Number
+    Default: "8000"
+  Region:
+    Type: String
+    Default: "eu-central-1"
+  VpcStack:
+    Type: String
+    Default: "django-scaling-vpc"
+  TaskCount:
+    Type: Number
+    Default: "0"
+  TaskCpu:
+    Type: String
+    Default: "4096"
+  TaskMemory:
+    Type: String
+    Default: "8192"
+  Image:
+    Type: String
+    Default: "103050589342.dkr.ecr.eu-central-1.amazonaws.com/djangoscaling:v6"
+
+
+Resources:
+  ECSCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: !Ref App
+
+  ECSTaskExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+                - ecs-tasks.amazonaws.com
+                - batch.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+  ECSTaskRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+                - ecs-tasks.amazonaws.com
+                - batch.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ecr
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Resource:
+                  - "*"
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:GetAuthorizationToken
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 1
+
+  taskdefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      ContainerDefinitions:
+        - EntryPoint:
+            - uwsgi
+            - '--show-config'
+          Essential: true
+          Image: !Ref Image
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref Region
+              awslogs-stream-prefix: ecsdjangoscaling
+          Name: django-scaling-app
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              HostPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: "REGION"
+              Value: !Ref Region
+      Cpu: !Ref TaskCpu
+      ExecutionRoleArn: !Ref ECSTaskExecutionRole
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      Family: task-definition-cfn
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to client host
+      VpcId: !ImportValue
+        'Fn::Sub': '${VpcStack}-VpcId'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !ImportValue
+        'Fn::Sub': "${VpcStack}-VpcId"
+      GroupName: LoadBalancerSecurityGroup
+      GroupDescription: Security group for load balancer
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: ecs-load-balancer
+      Subnets:
+        - Fn::ImportValue: !Sub "${VpcStack}-PublicSubnet1"
+        - Fn::ImportValue: !Sub "${VpcStack}-PublicSubnet2"
+      SecurityGroups:
+        - !GetAtt LoadBalancerSecurityGroup.GroupId
+
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: ip
+      Name: ecs-target-group
+      Port: 80
+      Protocol: HTTP
+      VpcId: !ImportValue
+        'Fn::Sub' : "${VpcStack}-VpcId"
+
+  ECSService:
+    Type: 'AWS::ECS::Service'
+    Properties:
+      ServiceName: django-scaling-service
+      Cluster: !Ref ECSCluster
+      DesiredCount: !Ref TaskCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - Fn::ImportValue: !Sub "${VpcStack}-PublicSubnet1"
+            - Fn::ImportValue: !Sub "${VpcStack}-PublicSubnet2"
+      TaskDefinition: !Ref taskdefinition
+      LoadBalancers:
+        - ContainerName: !Ref ContainerName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+    DependsOn:
+      - LoadBalancerListener
+
+Outputs:
+  LoadBalancerDNSName:
+    Description: LoadBalancerDNSName
+    Value: !Sub "http://${LoadBalancer.DNSName}"
+    Export:
+      Name:
+        'Fn::Sub': '${AWS::StackName}-LoadBalancerDNSName'
+

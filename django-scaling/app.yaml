@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: django-scaling
+  namespace: demo
+  labels:
+    app: django-scaling
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: django-scaling
+  template:
+    metadata:
+      labels:
+        app: django-scaling
+    spec:
+      containers:
+        - name: django-scaling
+          image: django-scaling:dev
+          env:
+            - name: REGION
+              value: "eu-central-1"
+          livenessProbe:
+            httpGet:
+              path: /hello/
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 30
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: django-scaling
+  namespace: demo
+spec:
+  type: NodePort
+  selector:
+    app: django-scaling
+  ports:
+    - protocol: TCP
+      name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 32003

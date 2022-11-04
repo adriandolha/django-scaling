@@ -1,0 +1,273 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  App:
+    Type: String
+    Default: "djangoscalingtests"
+  ContainerName:
+    Type: String
+    Default: "django-scaling-tests"
+  ContainerPort:
+    Type: Number
+    Default: "8000"
+  VpcStack:
+    Type: String
+    Default: "django-scaling-vpc"
+  ECSStack:
+    Type: String
+    Default: "django-scaling-ecs"
+  Image:
+    Type: String
+    Default: "103050589342.dkr.ecr.eu-west-1.amazonaws.com/djangoscalingtests:v4"
+  MasterTaskCount:
+    Type: Number
+    Default: "0"
+  TaskCount:
+    Type: Number
+    Default: "0"
+  MasterCpu:
+    Type: String
+    Default: "1024"
+  MasterMemory:
+    Type: String
+    Default: "2048"
+  MasterIp:
+    Type: String
+    Description: "Locust master public IP. First, deploy with MasterTaskCount=1 and TaskCount=0. Then take master ip and update it here."
+    Default: "34.247.254.181"
+
+  LoadBalancerDNSName:
+    Type: String
+    Default: "http://django.scaling.adolha.com"
+  SlaveCpu:
+    Type: String
+    Default: "1024"
+  SlaveMemory:
+    Type: String
+    Default: "2048"
+  Region:
+    Type: String
+    Default: "eu-west-1"
+
+Resources:
+  ECSCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: !Ref App
+
+  ECSTaskExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+                - ecs-tasks.amazonaws.com
+                - batch.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to client host
+      VpcId: !ImportValue
+        'Fn::Sub': '${VpcStack}-VpcId'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 5557
+          ToPort: 5557
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 5558
+          ToPort: 5558
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 5557
+          ToPort: 5557
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 5558
+          ToPort: 5558
+          CidrIp: 0.0.0.0/0
+  ECSTaskRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+                - ecs-tasks.amazonaws.com
+                - batch.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ecr
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Resource:
+                  - "*"
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:GetAuthorizationToken
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 1
+
+  taskdefinitionmaster:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      ContainerDefinitions:
+        - Entrypoint:
+            - locust
+            - '-f'
+            - 'test_sample.py'
+            - '--master'
+            - '--web-port'
+            - '8000'
+          Essential: true
+          Image: !Ref Image
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region: !Ref Region
+              awslogs-stream-prefix: ecsdjangoscalingtests
+          Name: django-scaling-app
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              HostPort: !Ref ContainerPort
+              Protocol: tcp
+            - ContainerPort: 5557
+              HostPort: 5557
+              Protocol: tcp
+            - ContainerPort: 5558
+              HostPort: 5558
+              Protocol: tcp
+          Environment:
+            - Name: "API_URL"
+              Value: !Ref LoadBalancerDNSName
+      Cpu: !Ref MasterCpu
+      Memory: !Ref MasterMemory
+      ExecutionRoleArn: !Ref ECSTaskExecutionRole
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      Family: task-definition-tests-master
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+
+  taskdefinitionslave:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      ContainerDefinitions:
+        - Command:
+            - locust
+            - '-f'
+            - 'test_sample.py'
+            - '--worker'
+            - '--master-host'
+            - !Ref MasterIp
+          Essential: true
+          Image: !Ref Image
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup
+              awslogs-region:  !Ref Region
+              awslogs-stream-prefix: ecsdjangoscalingtestsslave
+          Name: django-scaling-tests-slave
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              HostPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: "API_URL"
+              Value: !Ref LoadBalancerDNSName
+
+      Cpu: !Ref SlaveCpu
+      Memory: !Ref SlaveMemory
+      ExecutionRoleArn: !Ref ECSTaskExecutionRole
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      Family: task-definition-tests-slave
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+
+  ECSService:
+    Type: 'AWS::ECS::Service'
+    Properties:
+      ServiceName: django-scaling-tests-master-service
+      Cluster: !Ref ECSCluster
+      DesiredCount: !Ref MasterTaskCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - Fn::ImportValue: !Sub "${VpcStack}-PublicSubnet3"
+            - Fn::ImportValue: !Sub "${VpcStack}-PublicSubnet4"
+      TaskDefinition: !Ref taskdefinitionmaster
+
+  ECSServiceSlave:
+    Type: 'AWS::ECS::Service'
+    Properties:
+      ServiceName: django-scaling-tests-slave-service
+      Cluster: !Ref ECSCluster
+      DesiredCount: !Ref TaskCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - Fn::ImportValue: !Sub "${VpcStack}-PublicSubnet3"
+            - Fn::ImportValue: !Sub "${VpcStack}-PublicSubnet4"
+      TaskDefinition: !Ref taskdefinitionslave
