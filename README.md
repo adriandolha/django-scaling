@@ -18,15 +18,15 @@ The architecture contains Route53 weighted routing between 2 ALBs in order to
 distribute load in 2 regions, since AWS has some vCPU limitations per account.
 ## Deployment Configuration
 Django App:
-* ECS task: 4 vCPU, 8GB RAM
+* ECS task: 4 vCPU, 8GB memory
 * uWSGI: 4 workers, 2 threads 
 
 Locust is used for testing, in a distributed load configuration, with 1 master and 10 workers.
 Locust master:
-* ECS task: 1 vCPU, 2GB RAM
+* ECS task: 1 vCPU, 2GB memory
 
 Locust worker:
-* ECS task: 1 vCPU, 2GB RAM
+* ECS task: 1 vCPU, 2GB memory
 * uses FastHttpUser to increase performance
 * uses gevent with pool.spawn to increase performance
 
