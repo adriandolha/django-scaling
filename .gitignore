@@ -28,3 +28,4 @@ venv
 package-lock.json
 .aws-sam
 samconfig.yaml
+settings.py
