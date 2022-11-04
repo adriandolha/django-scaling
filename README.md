@@ -143,7 +143,7 @@ aws cloudformation update-stack --stack-name django-scaling-ecs-tests \
 ## Run tests
 Open locust web at http://<master_ip>:8000, set the number of users, set host to http://<master_ip>:8000 and start 
 running the tests.
-[Test Report](design/test_report.html)
+[Test Report](https://htmlpreview.github.io/?https://github.com/adriandolha/django-scaling/blob/main/design/test_report.html)
 ## Shutdown
 
 ```
